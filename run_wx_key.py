@@ -5,6 +5,12 @@ wx_key.dll Python wrapper - Extract WeChat DB key via DLL injection
 
 LC044/WeChatMsg (留痕 MemoTrace) 配套工具 | 原作者: SiYuan
 依赖: wx_key.dll (https://github.com/ycccccccy/wx_key)
+
+⚠️ 注意：wx_key.dll 必须在微信登录之前注入！
+   如果微信已经登录，数据库已打开，Hook 拦截不到任何东西。
+   
+   ✅ 推荐方案：直接打开 GUI 点「检测微信」→ 自动内存暴力扫描
+   ✅ 备选方案：python auto_extract.py（自动杀微信→注Hook→重启→捕获）
 """
 import ctypes
 import time
@@ -17,6 +23,22 @@ dll_path = r'C:\wx_key_extracted\data\flutter_assets\assets\dll\wx_key.dll'
 print('=' * 60)
 print(' WeChat DB Key Extractor (wx_key.dll v2.1.8)')
 print('=' * 60)
+print()
+print('⚠️  注意：本工具仅在微信未登录时有效！')
+print('   如果微信已登录，请使用以下方法之一：')
+print()
+print('   方法一（推荐）：python gui_app.py → 点「检测微信」')
+print('        → GUI 会自动进行内存暴力扫描提取密钥')
+print()
+print('   方法二：python auto_extract.py')
+print('        → 自动杀微信 → 注入Hook → 重启微信 → 登录时捕获密钥')
+print()
+print('   方法三：继续运行本脚本（仅在微信刚启动未登录时有效）')
+print()
+
+ans = input('按 Enter 继续，或输入 q 退出: ').strip().lower()
+if ans == 'q':
+    sys.exit(0)
 
 # Step 1: Find WeChat PID (must be the one with Weixin.dll loaded)
 print('\n[1] Finding WeChat process...')

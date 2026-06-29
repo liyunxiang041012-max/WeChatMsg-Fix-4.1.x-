@@ -102,7 +102,7 @@ def get_memory_regions(process_handle):
             ctypes.byref(mbi),
             ctypes.sizeof(mbi)
     ):
-        if mbi.State == MEM_COMMIT and mbi.Type == MEM_PRIVATE:
+        if mbi.State == MEM_COMMIT and (mbi.Type == MEM_PRIVATE or mbi.Type == 0x40000):  # 0x40000 = MEM_MAPPED
             regions.append((mbi.BaseAddress, mbi.RegionSize))
         address += mbi.RegionSize
     return regions
@@ -341,6 +341,68 @@ def get_key_inner(pid, process_infos):
     return keys
 
 
+def get_key_bruteforce(pid, process_handle, buf, process_infos):
+    """
+    暴力扫描：在含关键字符串的内存区域中提取所有 32 字节候选密钥。
+    微信 4.1.x 内存在储为 UTF-16LE，需同时搜索 ASCII 和宽字符版本。
+    """
+    # 关键字符串的 ASCII 和 UTF-16LE 版本
+    needle_ascii = [b'USER_KEYINFO', b'db_storage']
+    needle_wide = [s.encode('utf-16-le') for s in ['USER_KEYINFO', 'db_storage']]
+    all_needles = needle_ascii + needle_wide
+
+    candidates = []
+    seen = set()
+
+    for base_address, region_size in process_infos:
+        if region_size > 200 * 1024 * 1024:
+            continue
+        if region_size < 64:
+            continue
+
+        memory = read_process_memory(process_handle, base_address, region_size)
+        if not memory:
+            continue
+
+        # 用所有编码版本匹配
+        if not any(n in memory for n in all_needles):
+            continue
+
+        print(f"[bruteforce] Scanning region 0x{base_address:x} size {region_size}")
+
+        memlen = len(memory)
+        # 步进 1 确保不错过未对齐的密钥
+        for offset in range(0, memlen - 31, 1):
+            chunk = memory[offset:offset + 32]
+            if chunk in seen:
+                continue
+            if chunk == b'\x00' * 32:
+                continue
+            # 快速熵过滤：至少 20 个不同字节值
+            if len(set(chunk)) < 20:
+                continue
+            seen.add(chunk)
+            candidates.append(chunk)
+
+        if len(candidates) > 30000:
+            break
+
+    print(f"[bruteforce] {len(candidates)} candidates after pre-filter, verifying...")
+
+    # 多进程 HMAC 验证
+    pool = multiprocessing.Pool(processes=max(multiprocessing.cpu_count() // 2, 2))
+    results = pool.starmap(check_chunk, ((c, buf) for c in candidates))
+    pool.close()
+    pool.join()
+
+    for r in results:
+        if r:
+            print(f"[bruteforce] Key found!")
+            return bytes.hex(r)
+
+    return None
+
+
 def get_key(pid, process_handle, buf):
     process_infos = get_memory_regions(process_handle)
 
@@ -357,7 +419,14 @@ def get_key(pid, process_handle, buf):
     for r in results:
         if r:
             keys += r
+
     key = get_key_(keys, buf)
+
+    # === 回退：yara 没找到密钥，暴力扫描含 USER_KEYINFO 的内存区域 ===
+    if not key:
+        print("[!] yara key scan failed, trying brute-force scan...")
+        key = get_key_bruteforce(pid, process_handle, buf, process_infos)
+
     return key
 
 

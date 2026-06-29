@@ -164,128 +164,6 @@ def decrypt_database(wx_info):
     return db_path
 
 
-def extract_key_via_wxkey(log_callback=None):
-    """
-    通过 wx_key.dll 注入微信进程提取密钥。
-    返回 (success: bool, key_hex: str, error_msg: str)
-    """
-    import psutil
-
-    def log(msg):
-        if log_callback:
-            log_callback(msg)
-        print(msg)
-
-    # 查找 wx_key.dll
-    dll_candidates = [
-        r'C:\wx_key_extracted\data\flutter_assets\assets\dll\wx_key.dll',
-        os.path.join(os.path.dirname(__file__), 'wx_key.dll'),
-    ]
-    dll_path = None
-    for p in dll_candidates:
-        if os.path.exists(p):
-            dll_path = p
-            break
-
-    if not dll_path:
-        return False, '', '未找到 wx_key.dll！请将 dll 放到程序同目录，\n或从 https://github.com/ycccccccy/wx_key 下载'
-
-    log(f'[wx_key] DLL: {dll_path}')
-
-    # 查找微信主进程（必须加载了 Weixin.dll 的那个）
-    pid = None
-    all_pids = []
-    for p in psutil.process_iter(['pid', 'name']):
-        if p.info['name'] and p.info['name'].lower() == 'weixin.exe':
-            try:
-                proc = psutil.Process(p.info['pid'])
-                has_dll = any('weixin.dll' in m.path.lower() for m in proc.memory_maps())
-                all_pids.append((p.info['pid'], has_dll))
-                if has_dll and pid is None:
-                    pid = p.info['pid']
-            except:
-                all_pids.append((p.info['pid'], False))
-
-    pid_display = ' | '.join(f"PID {p}{'*' if d else ''}" for p, d in all_pids)
-    log(f'[wx_key] 微信进程: {pid_display} (* = 有Weixin.dll)')
-
-    if not pid:
-        # 没有找到带 Weixin.dll 的进程，尝试任意一个
-        for p, _ in all_pids:
-            pid = p
-            log(f'[wx_key] 回退到 PID {pid}（无Weixin.dll，可能失败）')
-            break
-
-    if not pid:
-        return False, '', '未找到微信进程 (Weixin.exe)，请先登录微信'
-
-    log(f'[wx_key] 微信 PID: {pid}')
-
-    # 加载 DLL
-    try:
-        os.chdir(os.path.dirname(dll_path))
-        wxkey = ctypes.CDLL(dll_path)
-    except Exception as e:
-        return False, '', f'加载 wx_key.dll 失败: {e}'
-
-    # 定义函数签名
-    wxkey.InitializeHook.argtypes = [ctypes.c_ulong]
-    wxkey.InitializeHook.restype = ctypes.c_bool
-    wxkey.PollKeyData.argtypes = [ctypes.c_char_p, ctypes.c_int]
-    wxkey.PollKeyData.restype = ctypes.c_bool
-    wxkey.GetStatusMessage.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
-    wxkey.GetStatusMessage.restype = ctypes.c_bool
-    wxkey.CleanupHook.argtypes = []
-    wxkey.CleanupHook.restype = ctypes.c_bool
-    wxkey.GetLastErrorMsg.argtypes = []
-    wxkey.GetLastErrorMsg.restype = ctypes.c_char_p
-
-    # 初始化 Hook
-    log('[wx_key] 正在注入 Hook...')
-    result = wxkey.InitializeHook(pid)
-    if not result:
-        err = wxkey.GetLastErrorMsg()
-        err_str = err.decode('utf-8', errors='replace') if err else '未知错误（请以管理员身份运行）'
-        wxkey.CleanupHook()
-        return False, '', f'Hook 初始化失败: {err_str}'
-
-    log('[wx_key] Hook 注入成功，等待微信访问数据库...')
-    log('[wx_key] 提示：在微信中打开一个聊天窗口或收藏夹来触发数据库访问')
-
-    # 轮询密钥（最多60秒）
-    key_hex = ''
-    for attempt in range(60):
-        buf = ctypes.create_string_buffer(256)
-        ok = wxkey.PollKeyData(buf, 256)
-
-        if attempt % 10 == 0:
-            status_buf = ctypes.create_string_buffer(512)
-            out_level = ctypes.c_int()
-            wxkey.GetStatusMessage(status_buf, 512, ctypes.byref(out_level))
-            log(f'[wx_key] [{attempt}s] {status_buf.value.decode("utf-8", errors="replace").strip()}')
-
-        if ok and buf.value:
-            data = buf.value.decode('utf-8', errors='replace').strip()
-            if data and len(data) == 64:
-                key_hex = data
-                log(f'[wx_key] 密钥捕获成功！({key_hex[:8]}...{key_hex[-8:]})')
-                break
-
-        time.sleep(1)
-
-    wxkey.CleanupHook()
-
-    if key_hex:
-        # 保存到文件
-        key_file = os.path.join(os.path.dirname(__file__), 'wechat_db_key.txt')
-        with open(key_file, 'w') as f:
-            f.write(key_hex)
-        log(f'[wx_key] 密钥已保存到 wechat_db_key.txt')
-        return True, key_hex, ''
-    else:
-        return False, '', '超时：60秒内未捕获到密钥。\n请确保微信在 Hook 后访问了数据库（打开聊天/收藏夹/朋友圈）'
-
-
 # ---------- GUI ----------
 class WeChatMsgApp:
     def __init__(self, root):
@@ -490,17 +368,8 @@ class WeChatMsgApp:
         self._flat_button(key_row, "使用此密钥", ORANGE,
                          self._use_manual_key, FONT_BODY).pack(side=tk.LEFT)
 
-        tk.Label(key_card, text="💡  也可将密钥保存为 wechat_db_key.txt 放在程序同目录，检测微信时自动加载",
-                 font=FONT_SMALL, bg=WHITE, fg=TEXT_GRAY).pack(anchor=tk.W, padx=16, pady=(0, 4))
-
-        # wx_key 自动提取按钮
-        wxkey_row = tk.Frame(key_card, bg=WHITE)
-        wxkey_row.pack(fill=tk.X, padx=16, pady=(0, 12))
-        self.wxkey_btn = self._flat_button(wxkey_row, "🔧  自动提取密钥 (wx_key.dll 注入)",
-                                            BLUE, self._extract_key_wxkey, FONT_BODY)
-        self.wxkey_btn.pack(side=tk.LEFT)
-        tk.Label(wxkey_row, text="微信运行时点击，自动注入获取密钥", font=FONT_SMALL,
-                 bg=WHITE, fg=TEXT_GRAY).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Label(key_card, text="💡  密钥也可保存为 wechat_db_key.txt 放在程序同目录，检测微信时自动加载",
+                 font=FONT_SMALL, bg=WHITE, fg=TEXT_GRAY).pack(anchor=tk.W, padx=16, pady=(0, 12))
 
         # 手动选择
         manual_row = tk.Frame(frame, bg=LIGHT_GRAY)
@@ -552,19 +421,15 @@ class WeChatMsgApp:
                 self.decrypt_btn.config(state=tk.DISABLED, bg='#CCCCCC')
                 self._set_log_status("●  密钥缺失", STATUS_COLORS['warning'])
                 self.detect_status.config(text="⚠️ 密钥未提取到，请手动输入", fg=ORANGE)
-                self.log("⚠️ 未提取到解密密钥 — 微信 4.x 的 yara 内存扫描已失效")
+                self.log("⚠️ yara 和暴力扫描均未找到密钥")
                 for err in errors:
                     self.log(f"  详情: {err}")
-                self.log("💡 请点击下方「🔧 自动提取密钥 (wx_key.dll 注入)」按钮")
                 messagebox.showwarning("密钥提取失败",
-                    "已检测到微信账号，但 yara 内存扫描无法提取密钥（微信 4.x 已改变内存布局）。\n\n"
-                    "💡 请使用以下任一方法获取密钥：\n\n"
-                    "  方法一（推荐）：点击下方「🔧 自动提取密钥 (wx_key.dll 注入)」\n"
-                    "    微信运行时点击，程序自动注入 DLL 捕获密钥\n\n"
-                    "  方法二：手动输入密钥\n"
-                    "    用 wx_key 工具提取密钥后粘贴到输入框\n\n"
-                    "  方法三：将密钥保存为 wechat_db_key.txt\n"
-                    "    放在程序同目录，下次检测微信时自动加载")
+                    "已检测到微信账号，但无法从内存中提取密钥。\n\n"
+                    "💡 解决方法：\n\n"
+                    "  1. 退出微信 → 重新登录 → 再点检测（推荐）\n"
+                    "  2. 手动输入 64 位十六进制密钥\n"
+                    "  3. 将密钥保存为 wechat_db_key.txt 自动加载")
         else:
             self.account_empty_label.config(text="未检测到微信，请确保微信已登录后重试")
             self._set_log_status("●  未检测到微信", STATUS_COLORS['error'])
@@ -612,67 +477,6 @@ class WeChatMsgApp:
         self._set_log_status("●  密钥已设置", WECHAT_GREEN)
         self.detect_status.config(text="✅ 手动密钥已生效", fg=WECHAT_GREEN)
         self.log(f"✅ 手动密钥已设置（{key[:8]}...{key[-8:]}），可点击【解密数据库】")
-
-    def _extract_key_wxkey(self):
-        """通过 wx_key.dll 注入提取密钥"""
-        self.wxkey_btn.config(state=tk.DISABLED, text="⏳  注入中...", bg='#CCCCCC')
-        self._set_log_status("●  提取密钥中...", STATUS_COLORS['info'])
-        self.log("[wx_key] 正在通过 DLL 注入提取密钥...")
-
-        def _run():
-            success, key_hex, error = extract_key_via_wxkey(log_callback=self.log)
-            self.root.after(0, lambda: self._on_wxkey_done(success, key_hex, error))
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _on_wxkey_done(self, success, key_hex, error):
-        self.wxkey_btn.config(state=tk.NORMAL,
-                              text="🔧  自动提取密钥 (wx_key.dll 注入)", bg=BLUE)
-
-        if success:
-            self._set_log_status("●  密钥已提取", WECHAT_GREEN)
-            self.log(f"[wx_key] ✅ 密钥提取成功！")
-
-            # 自动填入密钥输入框
-            self.key_entry.delete(0, tk.END)
-            self.key_entry.insert(0, key_hex)
-
-            # 如果有检测到的账号，自动设置密钥
-            if self.wx_accounts:
-                if not self.selected_account:
-                    self.selected_account = self.wx_accounts[0]
-                self.selected_account['key'] = key_hex
-                self.selected_account['has_key'] = True
-                self.selected_account['errcode'] = 200
-                self.decrypt_btn.config(state=tk.NORMAL, bg=BLUE, text="🔓  解密数据库")
-                self.detect_status.config(text="✅ 密钥已自动提取", fg=WECHAT_GREEN)
-
-                # 刷新账号列表状态
-                for i, item in enumerate(self.account_tree.get_children()):
-                    if i < len(self.wx_accounts):
-                        acc = self.wx_accounts[i]
-                        name_text = acc['name'] or '(未知)'
-                        status = '✅ 已获取' if acc.get('has_key') else '⚠️ 未获取'
-                        ver_text = "4.0" if acc['version'] == 4 else "3.x"
-                        self.account_tree.item(item, values=(acc['wxid'], name_text, ver_text, status))
-            else:
-                self.log("[wx_key] 提示：请先点击【检测微信】，再使用密钥解密")
-
-            messagebox.showinfo("密钥提取成功",
-                f"✅ 密钥已自动提取并填入！\n\n"
-                f"密钥: {key_hex[:16]}...{key_hex[-16:]}\n\n"
-                f"已保存到 wechat_db_key.txt，下次检测微信时会自动加载。\n\n"
-                f"请点击【解密数据库】继续。")
-        else:
-            self._set_log_status("●  提取失败", STATUS_COLORS['error'])
-            self.log(f"[wx_key] ❌ 提取失败: {error}")
-            messagebox.showwarning("密钥提取失败",
-                f"❌ {error}\n\n"
-                f"💡 排查建议：\n"
-                f"  1. 确保微信 (Weixin.exe) 正在运行且已登录\n"
-                f"  2. 确保 wx_key.dll 在程序目录或 C:\\wx_key_extracted\\... 下\n"
-                f"  3. 以管理员身份运行本程序\n"
-                f"  4. Hook 注入后在微信中打开聊天窗口触发数据库访问")
 
     def _decrypt_db(self):
         if not self.selected_account:
