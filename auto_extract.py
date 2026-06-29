@@ -17,6 +17,13 @@ import sys
 import subprocess
 import psutil
 
+# === PowerShell 编码修复 ===
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except:
+    pass
+
 dll_path = r'C:\wx_key_extracted\data\flutter_assets\assets\dll\wx_key.dll'
 
 print('=' * 60)
@@ -134,21 +141,28 @@ wxkey.CleanupHook.restype = ctypes.c_bool
 wxkey.GetLastErrorMsg.argtypes = []
 wxkey.GetLastErrorMsg.restype = ctypes.c_char_p
 
-# Try hooking ALL WeChat processes (WeChat spawns multiple)
+# Try hooking: prioritize the PID with Weixin.dll
 all_wechat_pids = []
 for p in psutil.process_iter(['pid', 'name']):
     if p.info['name'] and p.info['name'].lower() == 'weixin.exe':
         try:
             if psutil.pid_exists(p.info['pid']):
-                all_wechat_pids.append(p.info['pid'])
+                proc = psutil.Process(p.info['pid'])
+                has_dll = any('weixin.dll' in m.path.lower() for m in proc.memory_maps())
+                all_wechat_pids.append((p.info['pid'], has_dll))
         except:
-            pass
+            all_wechat_pids.append((p.info['pid'], False))
 
-print(f'[+] All WeChat PIDs: {all_wechat_pids}')
+# Sort: Weixin.dll processes first
+all_wechat_pids.sort(key=lambda x: not x[1])
+pid_labels = []
+for p, d in all_wechat_pids:
+    pid_labels.append(f"PID {p}*" if d else f"PID {p}")
+print(f'[+] WeChat PIDs: {", ".join(pid_labels)} (* = has Weixin.dll)')
 
-# Try each PID until one succeeds
+# Try each PID until one succeeds (Weixin.dll processes first)
 result = False
-for target_pid in all_wechat_pids:
+for target_pid, _has_dll in all_wechat_pids:
     for retry in range(2):
         print(f'[+] Trying PID {target_pid} (attempt {retry+1})...')
         result = wxkey.InitializeHook(target_pid)

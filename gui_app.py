@@ -192,11 +192,28 @@ def extract_key_via_wxkey(log_callback=None):
 
     log(f'[wx_key] DLL: {dll_path}')
 
-    # 查找微信进程
+    # 查找微信主进程（必须加载了 Weixin.dll 的那个）
     pid = None
+    all_pids = []
     for p in psutil.process_iter(['pid', 'name']):
         if p.info['name'] and p.info['name'].lower() == 'weixin.exe':
-            pid = p.info['pid']
+            try:
+                proc = psutil.Process(p.info['pid'])
+                has_dll = any('weixin.dll' in m.path.lower() for m in proc.memory_maps())
+                all_pids.append((p.info['pid'], has_dll))
+                if has_dll and pid is None:
+                    pid = p.info['pid']
+            except:
+                all_pids.append((p.info['pid'], False))
+
+    pid_display = ' | '.join(f"PID {p}{'*' if d else ''}" for p, d in all_pids)
+    log(f'[wx_key] 微信进程: {pid_display} (* = 有Weixin.dll)')
+
+    if not pid:
+        # 没有找到带 Weixin.dll 的进程，尝试任意一个
+        for p, _ in all_pids:
+            pid = p
+            log(f'[wx_key] 回退到 PID {pid}（无Weixin.dll，可能失败）')
             break
 
     if not pid:
