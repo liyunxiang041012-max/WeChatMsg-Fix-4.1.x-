@@ -151,10 +151,10 @@ def decrypt_database(wx_info):
 
     if wx_info['version'] == 4:
         decrypt_v4.decrypt_db_files(key, src_dir=wx_dir, dest_dir=output_dir)
-        db_path = output_dir  # decrypt_v4 mirrors wx_dir structure into output_dir directly
+        db_path = os.path.join(output_dir, 'db_storage')
     else:
         decrypt_v3.decrypt_db_files(key, src_dir=wx_dir, dest_dir=output_dir)
-        db_path = output_dir
+        db_path = os.path.join(output_dir, 'Msg')
 
     # 保存 info.json
     info_data = wx_info['me'].to_json()

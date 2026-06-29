@@ -21,10 +21,7 @@ except:
     pass
 
 DLL = r'C:\wx_key_extracted\data\flutter_assets\assets\dll\wx_key.dll'
-if getattr(sys, 'frozen', False):
-    SCRIPT_DIR = os.path.dirname(sys.executable)
-else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def log(msg):
     print(msg, flush=True)
