@@ -85,7 +85,7 @@ print('[+] This may take a moment - try opening a chat or Favorites in WeChat...
 key_found = False
 key_hex = ''
 
-for attempt in range(60):
+for attempt in range(300):  # 5分钟，微信4.1.x初始化约需2分钟
     buf = ctypes.create_string_buffer(256)
     ok = wxkey.PollKeyData(buf, 256)
     
@@ -131,7 +131,7 @@ if key_found:
     except Exception as e:
         print(f'[!] Hex conversion error: {e}')
 else:
-    print('[!] Key not captured within 60 seconds.')
+    print('[!] Key not captured within 5 minutes.')
     status_buf = ctypes.create_string_buffer(512)
     out_level = ctypes.c_int()
     wxkey.GetStatusMessage(status_buf, 512, ctypes.byref(out_level))
