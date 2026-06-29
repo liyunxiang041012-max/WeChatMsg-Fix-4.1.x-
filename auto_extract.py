@@ -38,7 +38,22 @@ else:
 
 # 2. Start WeChat
 print('\n[2/6] Starting WeChat...')
-wechat_paths = [r'D:\sofa\Weixin\Weixin.exe']
+# 查找微信路径
+wechat_paths = [
+    r'D:\sofa\Weixin\Weixin.exe',
+    os.path.expandvars(r'%ProgramFiles%\Tencent\Weixin\Weixin.exe'),
+    os.path.expandvars(r'%ProgramFiles(x86)%\Tencent\Weixin\Weixin.exe'),
+    os.path.expandvars(r'%LOCALAPPDATA%\Programs\Weixin\Weixin.exe'),
+]
+# 也尝试从注册表获取
+for p in psutil.process_iter(['exe']):
+    try:
+        exe = p.info['exe']
+        if exe and exe.lower().endswith('weixin.exe'):
+            wechat_paths.insert(0, exe)
+            break
+    except:
+        pass
 wechat_exe = None
 for p in wechat_paths:
     if os.path.exists(p):
@@ -199,7 +214,7 @@ for attempt in range(300):  # Up to 5 minutes
 print('\n[6/6] Saving...')
 
 if key_found:
-    base = r'd:\浏览器下载\WeChatMsg-master'
+    base = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(base, 'wechat_db_key.txt'), 'w') as f:
         f.write(key_hex)
     print(f'[+] Key saved to wechat_db_key.txt')

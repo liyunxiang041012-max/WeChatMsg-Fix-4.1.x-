@@ -108,7 +108,7 @@ print('\n[5] Saving results...')
 
 if key_found:
     # Save to file
-    out_path = r'd:\浏览器下载\WeChatMsg-master\wechat_db_key.txt'
+    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wechat_db_key.txt')
     with open(out_path, 'w') as f:
         f.write(key_hex)
     print(f'[+] Key saved to: {out_path}')
@@ -119,7 +119,7 @@ if key_found:
         print(f'[+] Key length: {len(key_bytes)} bytes')
         print(f'[+] Key (hex): {key_bytes.hex()}')
         
-        bin_path = r'd:\浏览器下载\WeChatMsg-master\wechat_db_key.bin'
+        bin_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wechat_db_key.bin')
         with open(bin_path, 'wb') as f:
             f.write(key_bytes)
         print(f'[+] Binary key saved to: {bin_path}')
