@@ -17,7 +17,7 @@ import hmac
 import hashlib
 import os
 import traceback
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Union, List
 from Crypto.Cipher import AES
 
@@ -116,5 +116,5 @@ def decrypt_db_files(key, src_dir: str, dest_dir: str):
                 print(dest_file_path)
                 decrypt_tasks.append((key, src_file_path, dest_file_path))
                 # decrypt_db_file_v3(key, src_file_path, dest_file_path)
-    with ProcessPoolExecutor(max_workers=16) as executor:
-        results = list(executor.map(decode_wrapper, decrypt_tasks))  # 使用顶层定义的函数
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        results = list(executor.map(decode_wrapper, decrypt_tasks))  # ThreadPool: 兼容GUI线程调用
