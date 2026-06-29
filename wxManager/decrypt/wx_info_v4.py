@@ -102,7 +102,24 @@ def get_memory_regions(process_handle):
             ctypes.byref(mbi),
             ctypes.sizeof(mbi)
     ):
-        if mbi.State == MEM_COMMIT and (mbi.Type == MEM_PRIVATE or mbi.Type == 0x40000):  # 0x40000 = MEM_MAPPED
+        if mbi.State == MEM_COMMIT and mbi.Type == MEM_PRIVATE:
+            regions.append((mbi.BaseAddress, mbi.RegionSize))
+        address += mbi.RegionSize
+    return regions
+
+
+# 获取所有内存区域（含 MEM_MAPPED，供暴力扫描使用）
+def get_memory_regions_all(process_handle):
+    regions = []
+    mbi = MEMORY_BASIC_INFORMATION()
+    address = 0
+    while ctypes.windll.kernel32.VirtualQueryEx(
+            process_handle,
+            ctypes.c_void_p(address),
+            ctypes.byref(mbi),
+            ctypes.sizeof(mbi)
+    ):
+        if mbi.State == MEM_COMMIT and (mbi.Type == MEM_PRIVATE or mbi.Type == 0x40000):
             regions.append((mbi.BaseAddress, mbi.RegionSize))
         address += mbi.RegionSize
     return regions
@@ -111,7 +128,7 @@ def get_memory_regions(process_handle):
 rules_v4 = r'''
 rule GetDataDir {
     strings:
-        $a = /[a-zA-Z]:\\(.{1,100}?\\){0,1}?xwechat_files\\[0-9a-zA-Z_-]{6,24}?\\db_storage\\/
+        $a = /[a-zA-Z]:\\(.{1,100}?\\){0,1}?xwechat_files\\[0-9a-zA-Z_-]{6,32}?\\db_storage\\/
     condition:
         $a
 }
@@ -343,10 +360,9 @@ def get_key_inner(pid, process_infos):
 
 def get_key_bruteforce(pid, process_handle, buf, process_infos):
     """
-    暴力扫描：在含关键字符串的内存区域中提取所有 32 字节候选密钥。
+    暴力扫描：在含关键字符串内存区域的 ±256 字节范围内提取候选密钥。
     微信 4.1.x 内存在储为 UTF-16LE，需同时搜索 ASCII 和宽字符版本。
     """
-    # 关键字符串的 ASCII 和 UTF-16LE 版本
     needle_ascii = [b'USER_KEYINFO', b'db_storage']
     needle_wide = [s.encode('utf-16-le') for s in ['USER_KEYINFO', 'db_storage']]
     all_needles = needle_ascii + needle_wide
@@ -354,7 +370,12 @@ def get_key_bruteforce(pid, process_handle, buf, process_infos):
     candidates = []
     seen = set()
 
-    for base_address, region_size in process_infos:
+    all_regions = get_memory_regions_all(process_handle)
+    if not all_regions:
+        all_regions = process_infos
+    print(f"[bruteforce] {len(all_regions)} regions, scanning near key strings...")
+
+    for base_address, region_size in all_regions:
         if region_size > 200 * 1024 * 1024:
             continue
         if region_size < 64:
@@ -364,32 +385,45 @@ def get_key_bruteforce(pid, process_handle, buf, process_infos):
         if not memory:
             continue
 
-        # 用所有编码版本匹配
-        if not any(n in memory for n in all_needles):
+        # 找到所有关键字符串的位置
+        needle_positions = []
+        for needle in all_needles:
+            pos = 0
+            while True:
+                idx = memory.find(needle, pos)
+                if idx == -1:
+                    break
+                needle_positions.append(idx)
+                pos = idx + len(needle)
+
+        if not needle_positions:
             continue
 
-        print(f"[bruteforce] Scanning region 0x{base_address:x} size {region_size}")
+        print(f"[bruteforce] Region 0x{base_address:x} size {region_size}, {len(needle_positions)} needle hits")
 
-        memlen = len(memory)
-        # 步进 1 确保不错过未对齐的密钥
-        for offset in range(0, memlen - 31, 1):
-            chunk = memory[offset:offset + 32]
-            if chunk in seen:
-                continue
-            if chunk == b'\x00' * 32:
-                continue
-            # 快速熵过滤：至少 20 个不同字节值
-            if len(set(chunk)) < 20:
-                continue
-            seen.add(chunk)
-            candidates.append(chunk)
+        # 在每个关键字符串 ±256 字节范围内提取 32 字节候选
+        for center in needle_positions:
+            start = max(0, center - 256)
+            end = min(len(memory), center + 32 + 256)
+            for offset in range(start, end - 31):
+                chunk = memory[offset:offset + 32]
+                if chunk in seen:
+                    continue
+                if chunk == b'\x00' * 32:
+                    continue
+                if len(set(chunk)) < 26:
+                    continue
+                seen.add(chunk)
+                candidates.append(chunk)
 
-        if len(candidates) > 30000:
+        if len(candidates) > 10000:
             break
 
-    print(f"[bruteforce] {len(candidates)} candidates after pre-filter, verifying...")
+    print(f"[bruteforce] {len(candidates)} candidates, verifying...")
 
-    # 多进程 HMAC 验证
+    if not candidates:
+        return None
+
     pool = multiprocessing.Pool(processes=max(multiprocessing.cpu_count() // 2, 2))
     results = pool.starmap(check_chunk, ((c, buf) for c in candidates))
     pool.close()
@@ -434,7 +468,7 @@ def get_wx_dir(process_handle):
     rules_v4_dir = r'''
     rule GetDataDir {
         strings:
-            $a = /[a-zA-Z]:\\(.{1,100}?\\){0,1}?xwechat_files\\[0-9a-zA-Z_-]{6,24}?\\db_storage\\/
+            $a = /[a-zA-Z]:\\(.{1,100}?\\){0,1}?xwechat_files\\[0-9a-zA-Z_-]{6,32}?\\db_storage\\/
         condition:
             $a
     }

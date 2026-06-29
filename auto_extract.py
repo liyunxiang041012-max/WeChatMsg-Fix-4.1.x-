@@ -1,135 +1,106 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-WeChat DB Key Auto-Extractor (wx_key DLL injection)
+微信密钥自动提取 - 杀微信 -> 重启 -> 注入Hook -> 等你登录 -> 捕获密钥
 
-Kill WeChat -> Install Hook -> Restart WeChat -> Capture DB key
-
-这是 LC044/WeChatMsg (留痕 MemoTrace) 项目的配套工具。
-原作者: SiYuan (https://github.com/LC044)
-
+LC044/WeChatMsg (留痕 MemoTrace) 配套工具 | 原作者: SiYuan
 依赖: wx_key.dll (https://github.com/ycccccccy/wx_key)
-"""
-import ctypes
-import time
-import os
-import sys
-import subprocess
-import psutil
 
-# === PowerShell 编码修复 ===
+用法:
+    1. 以管理员身份运行本脚本
+    2. 脚本自动杀微信、重启、注入Hook
+    3. 看到 "Hook就绪" 提示后，在微信登录窗口扫码/点登录
+    4. 密钥自动保存到 wechat_db_key.txt
+"""
+import ctypes, time, os, sys, subprocess, psutil
+
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 except:
     pass
 
-dll_path = r'C:\wx_key_extracted\data\flutter_assets\assets\dll\wx_key.dll'
+DLL = r'C:\wx_key_extracted\data\flutter_assets\assets\dll\wx_key.dll'
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-print('=' * 60)
-print(' WeChat DB Key Auto-Extractor')
-print('=' * 60)
+def log(msg):
+    print(msg, flush=True)
 
-# 1. Kill existing WeChat
-print('\n[1/6] Killing WeChat...')
+# ========== Step 1: Kill WeChat ==========
+log('=' * 60)
+log(' [1/5] 关闭微信...')
+log('=' * 60)
 os.system('taskkill /f /im Weixin.exe 2>nul')
-for i in range(30):
-    alive = any(p.name().lower() == 'weixin.exe' for p in psutil.process_iter(['name']))
+for _ in range(30):
+    alive = [p for p in psutil.process_iter(['name']) if p.info['name'] and p.info['name'].lower() == 'weixin.exe']
     if not alive:
-        print(f'[+] WeChat closed')
+        log(' [+] 微信已关闭')
         break
     time.sleep(1)
 else:
-    print('[!] Failed to kill WeChat')
+    log(' [!] 无法关闭微信，请手动退出后重试')
     sys.exit(1)
+time.sleep(3)
 
-# 2. Start WeChat
-print('\n[2/6] Starting WeChat...')
-# 查找微信路径
-wechat_paths = [
+# ========== Step 2: Start WeChat ==========
+log('\n[2/5] 启动微信...')
+wechat_exe = None
+candidates = [
     r'D:\sofa\Weixin\Weixin.exe',
     os.path.expandvars(r'%ProgramFiles%\Tencent\Weixin\Weixin.exe'),
     os.path.expandvars(r'%ProgramFiles(x86)%\Tencent\Weixin\Weixin.exe'),
     os.path.expandvars(r'%LOCALAPPDATA%\Programs\Weixin\Weixin.exe'),
 ]
-# 也尝试从注册表获取
-for p in psutil.process_iter(['exe']):
-    try:
-        exe = p.info['exe']
-        if exe and exe.lower().endswith('weixin.exe'):
-            wechat_paths.insert(0, exe)
-            break
-    except:
-        pass
-wechat_exe = None
-for p in wechat_paths:
+for p in candidates:
     if os.path.exists(p):
         wechat_exe = p
         break
 if not wechat_exe:
-    print('[!] Cannot find Weixin.exe')
-    sys.exit(1)
+    log(' [!] 找不到 Weixin.exe！请手动输入路径')
+    wechat_exe = input(' 微信路径: ').strip()
+    if not os.path.exists(wechat_exe):
+        log(' [!] 路径不存在，退出')
+        sys.exit(1)
 
-print(f'[+] Launching: {wechat_exe}')
+log(f' [+] 启动: {wechat_exe}')
 subprocess.Popen([wechat_exe], shell=True)
+time.sleep(5)  # 等一会让进程启动
 
-# 3. Wait for WeChat to fully initialize with Weixin.dll loaded
-print('\n[3/6] Waiting for WeChat to stabilize (Weixin.dll loaded)...')
+# ========== Step 3: Find PID & Install Hook ==========
+log('\n[3/5] 查找微信主进程并注入Hook...')
 pid = None
-
-# Wait for WeChat process that HAS Weixin.dll loaded
 for attempt in range(60):
-    wechat_pids = []
     for p in psutil.process_iter(['pid', 'name']):
         if p.info['name'] and p.info['name'].lower() == 'weixin.exe':
             try:
                 proc = psutil.Process(p.info['pid'])
-                # Check if this process has Weixin.dll loaded
                 for m in proc.memory_maps():
                     if 'weixin.dll' in m.path.lower():
-                        # This is the REAL WeChat process
-                        wechat_pids.append((p.info['pid'], True))
+                        pid = p.info['pid']
                         break
-                else:
-                    wechat_pids.append((p.info['pid'], False))
             except:
                 pass
-    
-    real_pids = [p for p, has_dll in wechat_pids if has_dll]
-    if real_pids:
-        pid = real_pids[-1]
-        print(f'[+] Found WeChat with Weixin.dll: PID {pid}')
-        time.sleep(3)
-        if psutil.pid_exists(pid):
-            print(f'[+] PID {pid} confirmed stable')
-            break
-        else:
-            pid = None
-    
-    if attempt % 5 == 0:
-        all_pids = [str(p) for p, _ in wechat_pids]
-        print(f'  [{attempt}s] WeChat PIDs: {all_pids}' + (f', with DLL: {real_pids}' if real_pids else ', no Weixin.dll yet'))
+            if pid:
+                break
+    if pid:
+        break
     time.sleep(2)
 
 if not pid:
-    print('[!] Could not find stable WeChat process with Weixin.dll')
-    print('[!] Trying to hook ALL WeChat processes anyway...')
-    # Fallback: find any WeChat process
+    # 回退
     for p in psutil.process_iter(['pid', 'name']):
         if p.info['name'] and p.info['name'].lower() == 'weixin.exe':
             pid = p.info['pid']
-            if psutil.pid_exists(pid):
-                break
-
+            break
 if not pid:
-    print('[!] No WeChat process found')
+    log(' [!] 找不到微信进程')
     sys.exit(1)
 
-# 4. Load DLL
-print('\n[4/6] Loading wx_key.dll...')
-os.chdir(os.path.dirname(dll_path))
-wxkey = ctypes.CDLL(dll_path)
+log(f' [+] 目标 PID: {pid}')
 
+# Load DLL
+os.chdir(os.path.dirname(DLL))
+wxkey = ctypes.CDLL(DLL)
 wxkey.InitializeHook.argtypes = [ctypes.c_ulong]
 wxkey.InitializeHook.restype = ctypes.c_bool
 wxkey.PollKeyData.argtypes = [ctypes.c_char_p, ctypes.c_int]
@@ -138,111 +109,74 @@ wxkey.GetStatusMessage.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER
 wxkey.GetStatusMessage.restype = ctypes.c_bool
 wxkey.CleanupHook.argtypes = []
 wxkey.CleanupHook.restype = ctypes.c_bool
-wxkey.GetLastErrorMsg.argtypes = []
-wxkey.GetLastErrorMsg.restype = ctypes.c_char_p
 
-# Try hooking: prioritize the PID with Weixin.dll
-all_wechat_pids = []
-for p in psutil.process_iter(['pid', 'name']):
-    if p.info['name'] and p.info['name'].lower() == 'weixin.exe':
-        try:
-            if psutil.pid_exists(p.info['pid']):
-                proc = psutil.Process(p.info['pid'])
-                has_dll = any('weixin.dll' in m.path.lower() for m in proc.memory_maps())
-                all_wechat_pids.append((p.info['pid'], has_dll))
-        except:
-            all_wechat_pids.append((p.info['pid'], False))
-
-# Sort: Weixin.dll processes first
-all_wechat_pids.sort(key=lambda x: not x[1])
-pid_labels = []
-for p, d in all_wechat_pids:
-    pid_labels.append(f"PID {p}*" if d else f"PID {p}")
-print(f'[+] WeChat PIDs: {", ".join(pid_labels)} (* = has Weixin.dll)')
-
-# Try each PID until one succeeds (Weixin.dll processes first)
-result = False
-for target_pid, _has_dll in all_wechat_pids:
-    for retry in range(2):
-        print(f'[+] Trying PID {target_pid} (attempt {retry+1})...')
-        result = wxkey.InitializeHook(target_pid)
-        print(f'[+] InitializeHook = {result}')
-        if result:
-            pid = target_pid
-            break
-        err = wxkey.GetLastErrorMsg()
-        err_str = err.decode('utf-8', errors='replace') if err else 'unknown'
-        print(f'[!] Error: {err_str}')
-        if retry < 1:
-            time.sleep(3)
-    if result:
-        break
-
+# Install hook
+result = wxkey.InitializeHook(pid)
 if not result:
-    print('[!] InitializeHook failed for all PIDs')
+    log(' [!] Hook 注入失败')
+    wxkey.CleanupHook()
     sys.exit(1)
+log(' [+] Hook 注入成功')
 
-# Show initial status
-def get_status():
+# ========== Step 4: Wait for hook to be ready ==========
+log('\n[4/5] 等待Hook就绪（不要登录！）...')
+last_status = ''
+for attempt in range(180):
     buf = ctypes.create_string_buffer(512)
     lvl = ctypes.c_int()
     wxkey.GetStatusMessage(buf, 512, ctypes.byref(lvl))
-    return buf.value.decode('utf-8', errors='replace').strip()
+    status = buf.value.decode('utf-8', errors='replace').strip()
 
-print(f'[+] Initial status: {get_status()}')
+    if status != last_status and status:
+        print(f'  [{attempt}s] {status}')
+        last_status = status
 
-# 5. Wait for WeChat to auto-login and open DBs
-print('\n[5/6] Waiting for WeChat login...')
-print('[+] The hook will capture the key when WeChat opens databases during login')
-print('[+] If auto-login fails, please manually click Login/scan QR code')
+    # Check for "ready" or "installed" keywords
+    if any(kw in status for kw in ['Hook安装成功', 'hook installed', 'ready', '就绪', '登录微信', '等待登录']):
+        log('\n' + '=' * 60)
+        log(' ⭐ Hook就绪！现在去微信登录窗口扫码/点登录！')
+        log('=' * 60)
+        break
 
+    time.sleep(1)
+else:
+    log('\n [!] Hook 初始化超时')
+
+# ========== Step 5: Poll for key ==========
+log('\n[5/5] 等待密钥（正在登录微信中...）\n')
 key_found = False
 key_hex = ''
-last_status = ''
-
-# Wait a bit for hook installation to complete in remote process
-time.sleep(5)
-
-for attempt in range(300):  # Up to 5 minutes
+for attempt in range(120):
     buf = ctypes.create_string_buffer(256)
     ok = wxkey.PollKeyData(buf, 256)
-    
-    if attempt % 10 == 0:
-        s = get_status()
-        if s != last_status:
-            print(f'  [{attempt}s] {s}')
-            last_status = s
-    
+
+    if attempt % 5 == 0:
+        s = ctypes.create_string_buffer(512)
+        lvl = ctypes.c_int()
+        wxkey.GetStatusMessage(s, 512, ctypes.byref(lvl))
+        st = s.value.decode('utf-8', errors='replace').strip()
+        if st and st != last_status:
+            print(f'  [{attempt}s] {st}')
+            last_status = st
+
     if ok and buf.value:
         data = buf.value.decode('utf-8', errors='replace').strip()
-        if data:
+        if len(data) >= 64:
             key_hex = data
             key_found = True
-            print(f'\n[+] *** KEY CAPTURED at {attempt}s! ***')
-            print(f'[+] Key (hex): {key_hex}')
+            log(f'\n [+] ✅ 密钥捕获！{key_hex[:16]}...{key_hex[-16:]}')
             break
-    
+
     time.sleep(1)
 
-# 6. Save and cleanup
-print('\n[6/6] Saving...')
-
+# ========== Save ==========
 if key_found:
-    base = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(base, 'wechat_db_key.txt'), 'w') as f:
+    with open(os.path.join(SCRIPT_DIR, 'wechat_db_key.txt'), 'w') as f:
         f.write(key_hex)
-    print(f'[+] Key saved to wechat_db_key.txt')
-    
-    try:
-        key_bytes = bytes.fromhex(key_hex)
-        print(f'[+] Key ({len(key_bytes)} bytes): {key_bytes.hex()}')
-        with open(os.path.join(base, 'wechat_db_key.bin'), 'wb') as f:
-            f.write(key_bytes)
-    except:
-        print('[!] Could not decode key as hex')
+    log(f' [+] 密钥已保存到 wechat_db_key.txt')
 else:
-    print('[!] Key not captured')
-    print(f'[!] Final status: {get_status()}')
+    log('\n [!] 未捕获到密钥')
+    log('    请重试，或在微信登录窗口出现后再运行本脚本')
 
 wxkey.CleanupHook()
-print('[+] Done!')
+log('\n [+] 完成！')
